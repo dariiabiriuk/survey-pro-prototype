@@ -106,4 +106,326 @@
     .opt input { width: auto; margin-right: 8px; }
     .kpi { display: flex; gap: 12px; }
     .kpi div { flex: 1; text-align: center; }
-    .kpi b { display: block; font
+    .kpi b { display: block; font-size: 26px; color: var(--pr); }
+  </style>
+</head>
+<body>
+
+  <header>
+    <b>Survey Pro</b>
+    <nav class="row" id="nav"></nav>
+    <span id="who"></span>
+  </header>
+
+  <main id="app"></main>
+
+  <script>
+    // --- MOCK DATA ---
+    let currentUser = null;
+    let currentSurvey = null;
+    let nextId = 4;
+    let currentAnswers = null;
+
+    const surveys = [
+      {
+        id: 1,
+        title: "Задоволеність студентів дистанційним навчанням",
+        st: "Активне",
+        q: [
+          { t: "Як ви оцінюєте якість лекцій?", k: "choice", o: ["Відмінно", "Добре", "Задовільно", "Погано"] },
+          { t: "Чого найбільше бракує?", k: "text", o: [] }
+        ],
+        r: [[0, "Дуже зручна платформа"], [1, ""], [0, "Більше практики"], [2, "Збої зв'язку"], [1, ""]],
+        res: { 0: [12, 18, 7, 2] }
+      },
+      {
+        id: 2,
+        title: "Споживчі звички: онлайн-покупки",
+        st: "Чернетка",
+        q: [],
+        r: [],
+        res: {}
+      },
+      {
+        id: 3,
+        title: "Оцінка роботи бібліотеки",
+        st: "Завершено",
+        q: [{ t: "Як часто ви користуєтесь бібліотекою?", k: "choice", o: ["Щодня", "Щотижня", "Рідко"] }],
+        r: [],
+        res: { 0: [5, 21, 14] }
+      }
+    ];
+
+    // --- HELPER FUNCTIONS ---
+    const $ = selector => document.querySelector(selector);
+    const countResponses = survey => survey.r.length + (survey.res[0] ? survey.res[0].reduce((a, b) => a + b, 0) : 0);
+
+    function updateNav() {
+      $('#who').textContent = currentUser ? ("👤 " + currentUser) : "";
+      $('#nav').innerHTML = currentUser ? '<button onclick="renderList()">Мої опитування</button>' : '';
+    }
+
+    // --- AUTHENTICATION ---
+    function renderLogin(msg) {
+      updateNav();
+      $('#app').innerHTML = `
+        <div class="card" style="max-width:380px; margin:40px auto">
+          <h2>Вхід для дослідника</h2>
+          <label>Email</label>
+          <input id="em" value="researcher@survey.pro">
+          <label>Пароль</label>
+          <input id="pw" type="password" value="123456">
+          <div class="err">${msg || ''}</div>
+          <div class="row" style="margin-top:12px">
+            <button class="p sp" onclick="handleLogin()">Увійти</button>
+          </div>
+          <p class="mu">Респондент? <a href="#" onclick="startRespondentFlow(1); return false">Пройти демо-опитування</a></p>
+        </div>`;
+    }
+
+    function handleLogin() {
+      const email = $('#em').value;
+      const pass = $('#pw').value;
+      if (!/^\S+@\S+\.\S+$/.test(email)) return renderLogin("Невірний формат email");
+      if (pass.length < 6) return renderLogin("Пароль має містити щонайменше 6 символів");
+      currentUser = email;
+      renderList();
+    }
+
+    // --- SURVEY MANAGEMENT (LIST & STATUS) ---
+    function renderList() {
+      updateNav();
+      const listHtml = surveys.map(s => `
+        <div class="card row">
+          <div class="sp">
+            <h3>${s.title}</h3>
+            <span class="mu">Запитань: ${s.q.length} · Відповідей: ${countResponses(s)}</span>
+          </div>
+          <span class="tag ${s.st}">${s.st}</span>
+          <button onclick="renderEdit(${s.id})">Редагувати</button>
+          ${s.st === "Чернетка" ? `<button class="p" onclick="publishSurvey(${s.id})">Опублікувати</button>` : ''}
+          ${s.st === "Активне" ? `<button onclick="setSurveyStatus(${s.id},'Призупинено')">Пауза</button><button onclick="startRespondentFlow(${s.id})">Пройти</button>` : ''}
+          ${s.st === "Призупинено" ? `<button onclick="setSurveyStatus(${s.id},'Активне')">Відновити</button>` : ''}
+          <button onclick="renderResults(${s.id})">Результати</button>
+          <button class="d" onclick="deleteSurvey(${s.id})">Видалити</button>
+        </div>`).join('');
+
+      $('#app').innerHTML = `
+        <div class="row">
+          <h2 class="sp">Мої опитування</h2>
+          <button class="p" onclick="renderEdit()">+ Створити опитування</button>
+        </div>` + (listHtml || '<p class="mu">Опитувань ще немає</p>');
+    }
+
+    function setSurveyStatus(id, status) {
+      surveys.find(s => s.id == id).st = status;
+      renderList();
+    }
+
+    function deleteSurvey(id) {
+      if (confirm("Видалити опитування?")) {
+        surveys.splice(surveys.findIndex(s => s.id == id), 1);
+        renderList();
+      }
+    }
+
+    function publishSurvey(id) {
+      const survey = surveys.find(x => x.id == id);
+      if (!survey.q.length) {
+        alert("Анкета неповна: додайте щонайменше одне запитання");
+        return renderEdit(id);
+      }
+      survey.st = "Активне";
+      renderList();
+    }
+
+    // --- CREATE & EDIT SURVEY ---
+    function renderEdit(id) {
+      currentSurvey = id ? surveys.find(s => s.id == id) : { id: nextId++, title: "", st: "Чернетка", q: [], r: [], res: {}, isNew: true };
+      drawEditForm();
+    }
+
+    function drawEditForm(msg) {
+      const questionsHtml = currentSurvey.q.map((q, i) => `
+        <div class="card">
+          <div class="row">
+            <b class="sp">Запитання ${i + 1}</b>
+            <button class="d" onclick="currentSurvey.q.splice(${i}, 1); drawEditForm()">✕</button>
+          </div>
+          <label>Текст</label>
+          <input value="${q.t}" oninput="currentSurvey.q[${i}].t = this.value">
+          <label>Тип</label>
+          <select onchange="currentSurvey.q[${i}].k = this.value; drawEditForm()">
+            <option value="choice" ${q.k == 'choice' ? 'selected' : ''}>Один варіант</option>
+            <option value="text" ${q.k == 'text' ? 'selected' : ''}>Відкрита відповідь</option>
+          </select>
+          ${q.k == 'choice' ? `
+            <label>Варіанти (через кому)</label>
+            <input value="${q.o.join(', ')}" oninput="currentSurvey.q[${i}].o = this.value.split(',').map(x => x.trim()).filter(Boolean)">
+          ` : ''}
+        </div>`).join('');
+
+      $('#app').innerHTML = `
+        <div class="card">
+          <h2>${currentSurvey.isNew ? 'Нове опитування' : 'Редагування опитування'}</h2>
+          <label>Назва</label>
+          <input id="tt" value="${currentSurvey.title}" oninput="currentSurvey.title = this.value">
+          <div class="err">${msg || ''}</div>
+        </div>
+        ${questionsHtml}
+        <div class="row">
+          <button onclick="currentSurvey.q.push({ t: '', k: 'choice', o: ['Так', 'Ні'] }); drawEditForm()">+ Додати запитання</button>
+          <span class="sp"></span>
+          <button onclick="renderList()">Скасувати</button>
+          <button class="p" onclick="saveSurvey()">Зберегти</button>
+        </div>`;
+    }
+
+    function saveSurvey() {
+      if (!currentSurvey.title.trim()) return drawEditForm("Вкажіть назву опитування");
+      if (currentSurvey.q.some(q => !q.t.trim() || (q.k == 'choice' && q.o.length < 2))) {
+        return drawEditForm("Кожне запитання потребує тексту, а вибір — щонайменше двох варіантів");
+      }
+      delete currentSurvey.isNew;
+      if (!surveys.includes(currentSurvey)) surveys.push(currentSurvey);
+      renderList();
+    }
+
+    // --- RESULTS & ANALYTICS ---
+    function renderResults(id) {
+      const survey = surveys.find(x => x.id == id);
+      currentSurvey = survey;
+      updateNav();
+      const totalResponses = countResponses(survey);
+
+      const analyticsHtml = survey.q.map((q, i) => {
+        if (q.k == 'choice') {
+          const data = survey.res[i] || q.o.map(() => 0);
+          const maxVal = Math.max(...data, 1);
+          return `
+            <div class="card">
+              <h3>${q.t}</h3>
+              ${q.o.map((optionText, j) => `
+                <div class="row" style="margin:6px 0">
+                  <span style="width:130px">${optionText}</span>
+                  <div class="bar" style="width:${((data[j] || 0) / maxVal) * 60}%">${data[j] || 0}</div>
+                </div>`).join('')}
+            </div>`;
+        }
+        const textResponses = survey.r.map(r => r[1]).filter(Boolean);
+        return `
+          <div class="card">
+            <h3>${q.t}</h3>
+            ${textResponses.map(txt => `<div class="mu">• ${txt}</div>`).join('') || '<span class="mu">Відповідей немає</span>'}
+          </div>`;
+      }).join('');
+
+      $('#app').innerHTML = `
+        <div class="row">
+          <h2 class="sp">${survey.title}</h2>
+          <button onclick="renderList()">← Назад</button>
+        </div>
+        <div class="card kpi">
+          <div><b>${totalResponses}</b>відповідей</div>
+          <div><b>${survey.q.length}</b>запитань</div>
+          <div><b>${survey.st}</b>статус</div>
+        </div>
+        ${analyticsHtml}
+        <button class="p" onclick="exportCsv()">Експорт у CSV</button>`;
+    }
+
+    function exportCsv() {
+      alert("Прототип: файл «" + currentSurvey.title + ".csv» сформовано (" + countResponses(currentSurvey) + " рядків)");
+    }
+
+    // --- RESPONDENT FLOW ---
+    function startRespondentFlow(id) {
+      const survey = surveys.find(x => x.id == id);
+      updateNav();
+      if (survey.st != "Активне") {
+        $('#app').innerHTML = `
+          <div class="card">
+            <h2>Опитування недоступне</h2>
+            <p>Термін проведення минув або збір відповідей зупинено.</p>
+            <button onclick="currentUser ? renderList() : renderLogin()">Закрити</button>
+          </div>`;
+        return;
+      }
+      $('#app').innerHTML = `
+        <div class="card" style="max-width:520px; margin:30px auto">
+          <h2>${survey.title}</h2>
+          <p>Ваші відповіді буде оброблено анонімно відповідно до політики конфіденційності.</p>
+          <label class="opt">
+            <input type="checkbox" id="ag"> Погоджуюсь на обробку даних
+          </label>
+          <div class="err" id="ae"></div>
+          <div class="row">
+            <button class="sp" onclick="currentUser ? renderList() : renderLogin()">Відмовитись</button>
+            <button class="p sp" onclick="if(!$('#ag').checked){ $('#ae').textContent='Без згоди продовжити неможливо'; } else { currentAnswers = []; renderQuestion(${id}, 0); }">Почати</button>
+          </div>
+        </div>`;
+    }
+
+    function renderQuestion(id, questionIndex, msg) {
+      const survey = surveys.find(x => x.id == id);
+      const q = survey.q[questionIndex];
+
+      const inputField = q.k == 'choice' 
+        ? q.o.map((optionText, j) => `<label class="opt"><input type="radio" name="a" value="${j}">${optionText}</label>`).join('')
+        : '<input id="tx" placeholder="Ваша відповідь">';
+
+      $('#app').innerHTML = `
+        <div class="card" style="max-width:520px; margin:30px auto">
+          <div class="mu">Запитання ${questionIndex + 1} з ${survey.q.length}</div>
+          <div class="bar" style="width:${((questionIndex + 1) / survey.q.length) * 100}%; height:6px; margin:6px 0 14px"></div>
+          <h3>${q.t}</h3>
+          ${inputField}
+          <div class="err">${msg || ''}</div>
+          <div class="row" style="margin-top:12px">
+            <button class="p sp" onclick="handleNextQuestion(${id}, ${questionIndex})">
+              ${questionIndex == survey.q.length - 1 ? 'Завершити' : 'Далі'}
+            </button>
+          </div>
+        </div>`;
+    }
+
+    function handleNextQuestion(id, questionIndex) {
+      const survey = surveys.find(x => x.id == id);
+      const q = survey.q[questionIndex];
+      let val;
+
+      if (q.k == 'choice') {
+        const selected = document.querySelector('input[name=a]:checked');
+        if (!selected) return renderQuestion(id, questionIndex, "Оберіть варіант відповіді");
+        val = +selected.value;
+      } else {
+        val = $('#tx').value;
+      }
+
+      currentAnswers[questionIndex] = val;
+
+      if (questionIndex < survey.q.length - 1) {
+        return renderQuestion(id, questionIndex + 1);
+      }
+
+      // Save choices count
+      currentAnswers.forEach((ans, k) => {
+        if (survey.q[k].k == 'choice') {
+          survey.res[k] = survey.res[k] || survey.q[k].o.map(() => 0);
+          survey.res[k][ans]++;
+        }
+      });
+
+      $('#app').innerHTML = `
+        <div class="card" style="max-width:520px; margin:30px auto; text-align:center">
+          <h2>Дякуємо!</h2>
+          <p>Вашу відповідь збережено.</p>
+          <button class="p" onclick="currentUser ? renderList() : renderLogin()">Готово</button>
+        </div>`;
+    }
+
+    // Initialize application
+    renderLogin();
+  </script>
+</body>
+</html>
